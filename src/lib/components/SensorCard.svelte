@@ -1,7 +1,7 @@
 <script>
 	/**
 	 * SensorCard.svelte
-	 * Displays a single sensor value (voltage, current, power).
+	 * Displays a single sensor value (voltage, current, power, runtime).
 	 *
 	 * Props:
 	 *   icon     — emoji
@@ -11,7 +11,7 @@
 	 *   accent   — CSS color string for the highlight bar
 	 *   disabled — true when device is offline
 	 */
-	let { icon, label, value = '--', unit, accent = '#5865f2', disabled = false } = $props();
+	let { icon, label, value = '--', unit = '', accent = '#5865f2', disabled = false } = $props();
 </script>
 
 <div class="sensor-card" class:disabled>
@@ -19,8 +19,8 @@
 	<div class="sensor-icon">{icon}</div>
 	<div class="sensor-label">{label}</div>
 	<div class="sensor-value">
-		<span class="val">{value}</span>
-		{#if value !== '--'}
+		<span class="val" class:long-text={String(value).length > 5}>{value}</span>
+		{#if value !== '--' && unit}
 			<span class="unit">{unit}</span>
 		{/if}
 	</div>
@@ -76,6 +76,7 @@
 		align-items: baseline;
 		gap: 0.3rem;
 		margin-top: 0.2rem;
+		max-width: 100%;
 	}
 
 	.val {
@@ -83,6 +84,11 @@
 		font-weight: 800;
 		color: #e8e8f8;
 		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.val.long-text {
+		font-size: 1.45rem;
 	}
 
 	.unit {

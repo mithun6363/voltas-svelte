@@ -17,8 +17,57 @@ export const TOPIC_RELAY = ['voltas/relay/1', 'voltas/relay/2', 'voltas/relay/3'
 export const TOPIC_VOLTAGE = 'voltas/sensors/voltage';
 export const TOPIC_CURRENT = 'voltas/sensors/current';
 export const TOPIC_POWER = 'voltas/sensors/power';
+export const TOPIC_RUNTIME = 'voltas/sensors/runtime';
 export const TOPIC_RELAY_STATUS = 'voltas/relay/status';
 export const TOPIC_DEVICE_STATUS = 'voltas/status'; // "online" / "offline" (LWT)
+export const TOPIC_ALARM = 'voltas/alarm/overcurrent';
+
+// ─── Over-current & Battery Constants (12V 14Ah Spec) ─────────────────────────
+export const OVER_CURRENT_LIMIT = 3.50; // Amperes threshold
+export const BATTERY_CAPACITY_AH = 14.0; // 14Ah spec
+export const BATTERY_NOMINAL_V = 12.0;  // 12V nominal
+export const BATTERY_FULL_V = 12.70;    // 100% full charge (resting)
+export const BATTERY_CUTOFF_V = 10.50;  // 0% safe cutoff voltage
+export const BATTERY_CRITICAL_V = 11.20; // Low-battery alarm trigger
+export const BATTERY_INTERNAL_R = 0.08; // Estimated internal resistance (Ohms)
+
+/**
+ * Calculates battery State-of-Charge (SoC %) compensated for voltage sag under load
+ * @param {number} vActual
+ * @param {number} current
+ * @returns {number}
+ */
+export function computeSoC(vActual, current) {
+	if (isNaN(vActual) || vActual <= 0) return 0;
+	const c = isNaN(current) || current < 0 ? 0 : current;
+	// Compensate for load sag: estimated open-circuit voltage
+	const voc = vActual + (c * BATTERY_INTERNAL_R);
+	const raw = ((voc - BATTERY_CUTOFF_V) / (BATTERY_FULL_V - BATTERY_CUTOFF_V)) * 100;
+	return Math.round(Math.max(0, Math.min(100, raw)));
+}
+
+/**
+ * Calculates human-readable battery runtime prediction based on 12V 14Ah spec
+ * @param {number} vActual
+ * @param {number} current
+ * @returns {string}
+ */
+export function computeRuntime(vActual, current) {
+	if (isNaN(current) || current <= 0.05) return 'Idle (No load)';
+	if (isNaN(vActual) || vActual <= BATTERY_CUTOFF_V) return '< 5 min (Empty)';
+	
+	const soc = computeSoC(vActual, current) / 100;
+	const remainingAh = BATTERY_CAPACITY_AH * Math.max(0.02, soc);
+	
+	// Incorporate mild Peukert effect (k = 1.05) for realistic run time under load
+	const effectiveCurrent = Math.pow(current, 1.05);
+	const hours = remainingAh / effectiveCurrent;
+	
+	if (hours > 99) return '> 99h';
+	const h = Math.floor(hours);
+	const m = Math.round((hours - h) * 60);
+	return h > 0 ? `${h}h ${m}m` : `${m} min`;
+}
 
 // ─── Reactive state (Svelte 5 runes — $state) ────────────────────────────────
 export const mqttState = $state({
@@ -29,9 +78,20 @@ export const mqttState = $state({
 	voltage: '--',
 	current: '--',
 	power: '--',
+	runtime: '--',
+	soc: '--',
 
 	/** @type {boolean[]} */
 	relays: [false, false, false, false],
+
+	/** Over-current alarm state */
+	overCurrentAlarm: false,
+	alarmMessage: '',
+	alarmTimestamp: /** @type {string|null} */ (null),
+
+	/** Low-battery alarm state */
+	lowBatteryAlarm: false,
+	lowBatteryMessage: '',
 
 	/** "online" | "offline" | "unknown" — sourced from voltas/status LWT topic */
 	deviceStatus: /** @type {'online'|'offline'|'unknown'} */ ('unknown'),
@@ -69,8 +129,10 @@ export function connectMQTT() {
 			TOPIC_VOLTAGE,
 			TOPIC_CURRENT,
 			TOPIC_POWER,
+			TOPIC_RUNTIME,
 			TOPIC_RELAY_STATUS,
 			TOPIC_DEVICE_STATUS,
+			TOPIC_ALARM,
 			...TOPIC_RELAY
 		];
 		client.subscribe(topics, { qos: 1 });
@@ -87,7 +149,11 @@ export function connectMQTT() {
 		mqttState.voltage = '--';
 		mqttState.current = '--';
 		mqttState.power = '--';
+		mqttState.runtime = '--';
+		mqttState.soc = '--';
 		mqttState.relays = [false, false, false, false];
+		mqttState.overCurrentAlarm = false;
+		mqttState.lowBatteryAlarm = false;
 	});
 
 	client.on('offline', () => {
@@ -97,7 +163,11 @@ export function connectMQTT() {
 		mqttState.voltage = '--';
 		mqttState.current = '--';
 		mqttState.power = '--';
+		mqttState.runtime = '--';
+		mqttState.soc = '--';
 		mqttState.relays = [false, false, false, false];
+		mqttState.overCurrentAlarm = false;
+		mqttState.lowBatteryAlarm = false;
 	});
 
 	client.on('error', (err) => {
@@ -117,22 +187,55 @@ export function connectMQTT() {
 				mqttState.voltage = '--';
 				mqttState.current = '--';
 				mqttState.power = '--';
+				mqttState.runtime = '--';
 				mqttState.relays = [false, false, false, false];
+				mqttState.overCurrentAlarm = false;
 			}
 			return;
 		}
 
-		// Only accept sensor data and relay echoes if ESP32 is online
+		// Only accept sensor data, alarms, and relay echoes if ESP32 is online
 		if (mqttState.deviceStatus !== 'online') {
 			return;
 		}
 
 		if (topic === TOPIC_VOLTAGE) {
 			mqttState.voltage = parseFloat(msg).toFixed(2);
+			updateRuntimeEstimate();
 		} else if (topic === TOPIC_CURRENT) {
-			mqttState.current = parseFloat(msg).toFixed(2);
+			const c = parseFloat(msg);
+			mqttState.current = c.toFixed(2);
+			updateRuntimeEstimate();
+
+			// Auto Protection: if current exceeds safe threshold, trip high load
+			if (c > OVER_CURRENT_LIMIT) {
+				handleOverCurrentProtection(c);
+			} else if (mqttState.overCurrentAlarm && c <= OVER_CURRENT_LIMIT - 0.5) {
+				// Auto-reset alarm when current returns safely below threshold
+				mqttState.overCurrentAlarm = false;
+			}
 		} else if (topic === TOPIC_POWER) {
 			mqttState.power = parseFloat(msg).toFixed(2);
+		} else if (topic === TOPIC_RUNTIME) {
+			mqttState.runtime = msg;
+		} else if (topic === TOPIC_ALARM) {
+			try {
+				const data = JSON.parse(msg);
+				if (data.alarm) {
+					mqttState.overCurrentAlarm = true;
+					mqttState.alarmMessage = data.message || 'Over-current limit exceeded!';
+					mqttState.alarmTimestamp = new Date().toLocaleTimeString();
+				} else {
+					mqttState.overCurrentAlarm = false;
+				}
+			} catch {
+				const isAlarm = msg.toUpperCase().includes('ALARM') || msg.toUpperCase().includes('TRIP');
+				mqttState.overCurrentAlarm = isAlarm;
+				if (isAlarm) {
+					mqttState.alarmMessage = msg;
+					mqttState.alarmTimestamp = new Date().toLocaleTimeString();
+				}
+			}
 		} else if (topic === TOPIC_RELAY_STATUS) {
 			try {
 				const data = JSON.parse(msg);
@@ -152,6 +255,54 @@ export function connectMQTT() {
 	});
 }
 
+function updateRuntimeEstimate() {
+	const v = parseFloat(mqttState.voltage);
+	const c = parseFloat(mqttState.current);
+	if (!isNaN(v) && !isNaN(c)) {
+		mqttState.runtime = computeRuntime(v, c);
+		const socVal = computeSoC(v, c);
+		mqttState.soc = `${socVal}%`;
+
+		// Low Battery Alarm trigger (< 11.2V or < 15%)
+		if (v <= BATTERY_CRITICAL_V || socVal <= 15) {
+			mqttState.lowBatteryAlarm = true;
+			mqttState.lowBatteryMessage = `LOW BATTERY ALERT: Battery dropped to ${socVal}% (${v.toFixed(2)}V). Critical threshold is ${BATTERY_CRITICAL_V}V!`;
+		} else if (v >= BATTERY_CRITICAL_V + 0.3) {
+			mqttState.lowBatteryAlarm = false;
+			mqttState.lowBatteryMessage = '';
+		}
+	}
+}
+
+/**
+ * Automatically sheds the highest current load when current exceeds limit
+ * @param {number} current
+ */
+function handleOverCurrentProtection(current) {
+	mqttState.overCurrentAlarm = true;
+	mqttState.alarmTimestamp = new Date().toLocaleTimeString();
+
+	// Priority of highest loads:
+	// Relay 2 is the highest load (index 1).
+	// If Relay 2 is ON, turn it OFF first. Otherwise turn off Relay 1, 4, 3.
+	const priorityOrder = [1, 0, 3, 2];
+	let trippedIndex = -1;
+
+	for (const idx of priorityOrder) {
+		if (mqttState.relays[idx]) {
+			trippedIndex = idx;
+			setRelay(idx, false);
+			break;
+		}
+	}
+
+	if (trippedIndex !== -1) {
+		mqttState.alarmMessage = `OVER-CURRENT DETECTED (${current.toFixed(2)}A > ${OVER_CURRENT_LIMIT}A). High current load (Relay ${trippedIndex + 1}) was automatically shut OFF.`;
+	} else {
+		mqttState.alarmMessage = `OVER-CURRENT DETECTED (${current.toFixed(2)}A > ${OVER_CURRENT_LIMIT}A).`;
+	}
+}
+
 // ─── Disconnect ───────────────────────────────────────────────────────────────
 export function disconnectMQTT() {
 	if (!client) return;
@@ -163,7 +314,18 @@ export function disconnectMQTT() {
 	mqttState.voltage = '--';
 	mqttState.current = '--';
 	mqttState.power = '--';
+	mqttState.runtime = '--';
+	mqttState.soc = '--';
 	mqttState.relays = [false, false, false, false];
+	mqttState.overCurrentAlarm = false;
+	mqttState.lowBatteryAlarm = false;
+}
+
+export function clearAlarm() {
+	mqttState.overCurrentAlarm = false;
+	mqttState.alarmMessage = '';
+	mqttState.lowBatteryAlarm = false;
+	mqttState.lowBatteryMessage = '';
 }
 
 // ─── Publish relay command ────────────────────────────────────────────────────

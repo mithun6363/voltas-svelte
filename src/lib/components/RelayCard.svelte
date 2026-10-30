@@ -1,24 +1,17 @@
 <script>
 	/**
 	 * RelayCard.svelte
-	 * A single relay toggle card.
-	 *
-	 * Props:
-	 *   index    — 0-based relay index
-	 *   label    — display name (e.g. "Relay 1")
-	 *   icon     — emoji / SVG string shown in the card
-	 *   state    — reactive boolean (is relay ON?)
-	 *   onToggle — callback(index, newState)
-	 *   disabled — grey-out when MQTT is disconnected
+	 * Interactive Relay Switch Card with Optimistic Feedback
 	 */
+	import { Zap, Power } from 'lucide-svelte';
 
 	let {
-		index,
-		label,
-		icon,
+		index = 0,
+		label = '',
+		gpio = 0,
 		state = false,
-		onToggle,
-		disabled = false
+		disabled = false,
+		onToggle
 	} = $props();
 
 	function handleClick() {
@@ -27,124 +20,54 @@
 	}
 </script>
 
-<button
-	class="relay-card"
-	class:on={state}
-	class:disabled
-	onclick={handleClick}
-	aria-pressed={state}
-	aria-label="{label} - {state ? 'ON' : 'OFF'}"
+<div
+	class="glass-card relative flex flex-col justify-between overflow-hidden rounded-2xl p-4 sm:p-5 transition-all duration-300
+	{state
+		? 'border-emerald-500/40 bg-gradient-to-b from-slate-900/90 to-emerald-950/20 shadow-[0_0_20px_rgba(34,197,94,0.15)]'
+		: 'border-slate-800/80 bg-slate-900/60 hover:border-slate-700'}
+	{disabled ? 'opacity-45 cursor-not-allowed pointer-events-none' : ''}"
 >
-	<div class="relay-icon">{icon}</div>
-	<div class="relay-label">{label}</div>
-
-	<div class="relay-badge" class:badge-on={state} class:badge-off={!state}>
-		{state ? 'ON' : 'OFF'}
-	</div>
-
-	<div class="relay-toggle">
-		<div class="toggle-track" class:active={state}>
-			<div class="toggle-thumb"></div>
+	<!-- Top Bar: Channel Icon & GPIO Label -->
+	<div class="flex items-center justify-between">
+		<div class="flex items-center gap-2.5">
+			<div class="flex h-9 w-9 items-center justify-center rounded-xl border transition-colors
+				{state ? 'border-emerald-500/30 bg-emerald-500/20 text-emerald-400' : 'border-slate-700/60 bg-slate-800/50 text-slate-400'}">
+				<Zap class="h-4 w-4 {state ? 'animate-pulse' : ''}" />
+			</div>
+			<div>
+				<h4 class="text-sm font-bold text-white tracking-wide">{label}</h4>
+				<span class="text-[11px] font-mono text-slate-400">GPIO {gpio}</span>
+			</div>
 		</div>
+
+		<!-- Status Badge -->
+		<span class="rounded-full px-2.5 py-0.5 text-[11px] font-bold tracking-wider uppercase transition-colors
+			{state
+				? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_8px_rgba(34,197,94,0.3)]'
+				: 'bg-slate-800 text-slate-400 border border-slate-700'}">
+			{state ? 'ON' : 'OFF'}
+		</span>
 	</div>
-</button>
 
-<style>
-	.relay-card {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 0.55rem;
-		padding: 1.4rem 1rem;
-		border-radius: 1.2rem;
-		border: 2px solid var(--card-border, #2a2a3a);
-		background: var(--card-bg, #1a1a2e);
-		cursor: pointer;
-		transition: all 0.25s ease;
-		width: 100%;
-		user-select: none;
-		position: relative;
-	}
-
-	.relay-card:hover:not(.disabled) {
-		border-color: #5865f2;
-		transform: translateY(-2px);
-		box-shadow: 0 8px 24px rgba(88, 101, 242, 0.25);
-	}
-
-	.relay-card.on {
-		border-color: #3ecf8e;
-		background: linear-gradient(135deg, #1a2e26 0%, #1a1a2e 100%);
-		box-shadow: 0 4px 20px rgba(62, 207, 142, 0.2);
-	}
-
-	.relay-card.disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-
-	.relay-icon {
-		font-size: 2.2rem;
-		line-height: 1;
-	}
-
-	.relay-label {
-		font-size: 1rem;
-		font-weight: 700;
-		color: #e0e0f0;
-		letter-spacing: 0.03em;
-	}
-
-	.relay-badge {
-		padding: 0.15rem 0.7rem;
-		border-radius: 999px;
-		font-size: 0.72rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-	}
-
-	.badge-on {
-		background: rgba(62, 207, 142, 0.18);
-		color: #3ecf8e;
-	}
-
-	.badge-off {
-		background: rgba(255, 100, 100, 0.12);
-		color: #ff6b6b;
-	}
-
-	/* Toggle switch */
-	.relay-toggle {
-		margin-top: 0.4rem;
-	}
-
-	.toggle-track {
-		width: 42px;
-		height: 22px;
-		border-radius: 11px;
-		background: #3a3a5a;
-		position: relative;
-		transition: background 0.25s ease;
-	}
-
-	.toggle-track.active {
-		background: #3ecf8e;
-	}
-
-	.toggle-thumb {
-		position: absolute;
-		top: 3px;
-		left: 3px;
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: #fff;
-		transition: transform 0.25s ease;
-		box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-	}
-
-	.toggle-track.active .toggle-thumb {
-		transform: translateX(20px);
-	}
-</style>
-
+	<!-- Bottom Bar: Toggle Switch Button -->
+	<div class="mt-6 flex items-center justify-between border-t border-slate-800/60 pt-4">
+		<span class="text-xs font-medium text-slate-400">Control Switch</span>
+		
+		<button
+			type="button"
+			role="switch"
+			aria-checked={state}
+			onclick={handleClick}
+			class="relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900
+			{state ? 'bg-emerald-500 shadow-[0_0_12px_rgba(34,197,94,0.4)]' : 'bg-slate-700'}"
+		>
+			<span class="sr-only">Toggle {label}</span>
+			<span
+				class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out
+				{state ? 'translate-x-5' : 'translate-x-0'}"
+			>
+				<Power class="h-3 w-3 m-1.5 text-slate-700" />
+			</span>
+		</button>
+	</div>
+</div>

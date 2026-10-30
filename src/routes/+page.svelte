@@ -1,339 +1,193 @@
 <script>
 	/**
-	 * +page.svelte  ─  Voltas MQTT Dashboard (SvelteKit 5, runes mode)
+	 * +page.svelte  ─  Voltas IoT Full-Stack SvelteKit Dashboard
 	 *
-	 * Connects to broker.emqx.io via WebSocket (wss://broker.emqx.io:8084/mqtt)
-	 * and provides:
-	 *   • Real-time sensor readings  (voltage / current / power)
-	 *   • 4-channel relay control    (toggle ON/OFF)
-	 *   • Connection status bar      (connect / disconnect / error)
+	 * High-Performance Dual-Connectivity Dashboard (Svelte 5 Runes)
+	 * Supports Local Direct HTTP REST & Cloud Remote MQTT over WebSockets
 	 */
-
 	import { onMount, onDestroy } from 'svelte';
-	import { mqttState, connectMQTT, disconnectMQTT, setRelay } from '#lib/mqtt.svelte.js';
-	import StatusBar from '#lib/components/StatusBar.svelte';
-	import SensorCard from '#lib/components/SensorCard.svelte';
-	import RelayCard from '#lib/components/RelayCard.svelte';
-	import DeviceStatus from '#lib/components/DeviceStatus.svelte';
+	import { appState, initConnection, destroyConnection, clearAlarms } from '#lib/connection.svelte.js';
+	import Header from '#lib/components/Header.svelte';
+	import TelemetryCard from '#lib/components/TelemetryCard.svelte';
+	import RelayGrid from '#lib/components/RelayGrid.svelte';
+	import LiveChart from '#lib/components/LiveChart.svelte';
+	import SettingsModal from '#lib/components/SettingsModal.svelte';
+	import AlarmBanner from '#lib/components/AlarmBanner.svelte';
 
-	// Relay display metadata
-	const RELAYS = [
-		{ label: 'Relay 1', icon: '💡' },
-		{ label: 'Relay 2', icon: '🔌' },
-		{ label: 'Relay 3', icon: '🌀' },
-		{ label: 'Relay 4', icon: '🔋' }
-	];
+	import { BatteryCharging, Zap, Gauge, Clock, ShieldAlert, Cpu } from 'lucide-svelte';
 
-	// Auto-connect when the page mounts
+	let settingsOpen = $state(false);
+
 	onMount(() => {
-		connectMQTT();
+		initConnection();
 	});
 
 	onDestroy(() => {
-		disconnectMQTT();
+		destroyConnection();
 	});
 
-	/** True only when both frontend MQTT is connected AND the ESP32 is confirmed online */
-	const isOnline = $derived(mqttState.connected && mqttState.deviceStatus === 'online');
-
-	/** Derived: how many relays are currently ON (only counted when online) */
-	const activeCount = $derived(isOnline ? mqttState.relays.filter(Boolean).length : 0);
-
-	/** Turn all relays ON */
-	function allOn() {
-		if (!isOnline) return;
-		for (let i = 0; i < 4; i++) setRelay(i, true);
-	}
-
-	/** Turn all relays OFF */
-	function allOff() {
-		if (!isOnline) return;
-		for (let i = 0; i < 4; i++) setRelay(i, false);
-	}
+	const isOnline = $derived(appState.status === 'ONLINE');
 </script>
 
 <svelte:head>
-	<title>Voltas MQTT Dashboard</title>
+	<title>Voltas IoT | ESP32 Smart Relay & Battery Monitor</title>
 </svelte:head>
 
-<div class="app">
-	<!-- ── Header / Status Bar ─────────────────────────────────────────────── -->
-	<StatusBar
-		connected={mqttState.connected}
-		connecting={mqttState.connecting}
-		error={mqttState.error}
-		lastSeen={mqttState.lastSeen}
-		onConnect={connectMQTT}
-		onDisconnect={disconnectMQTT}
-	/>
+<div class="flex min-h-screen flex-col bg-[#07090e] text-slate-100">
+	<!-- Top Bar -->
+	<Header onOpenSettings={() => (settingsOpen = true)} />
 
-	<main class="dashboard">
+	<!-- Main Content Area -->
+	<main class="mx-auto flex-1 w-full max-w-7xl px-4 py-6 sm:px-6 space-y-6">
 
-		<!-- ── ESP32 Device Status ──────────────────────────────────────────── -->
-		<DeviceStatus status={mqttState.deviceStatus} />
+		<!-- Over-Current Alarm Banner -->
+		<AlarmBanner
+			active={isOnline && appState.overCurrentAlarm}
+			title="OVER-CURRENT PROTECTION TRIGGERED"
+			type="danger"
+			icon="⚡⚠️"
+			message={appState.alarmMessage}
+			timestamp={appState.alarmTimestamp || ''}
+			onDismiss={clearAlarms}
+		/>
 
-		<!-- ── Sensor Cards ─────────────────────────────────────────────────── -->
-		<section class="section">
-			<h2 class="section-title">📊 Live Readings</h2>
-			<div class="sensor-grid">
-				<SensorCard
-					icon="🔋"
-					label="Voltage"
-					value={isOnline ? mqttState.voltage : '--'}
+		<!-- Low-Battery Alarm Banner -->
+		<AlarmBanner
+			active={isOnline && appState.lowBatteryAlarm}
+			title="LOW BATTERY WARNING (12V 14Ah SPEC)"
+			type="warning"
+			icon="🪫⚠️"
+			message={appState.lowBatteryMessage}
+			timestamp={appState.lastSeen || ''}
+			onDismiss={clearAlarms}
+		/>
+
+		<!-- ── Live Telemetry Cards Grid ──────────────────────────────────────── -->
+		<section class="space-y-3">
+			<div class="flex items-center justify-between">
+				<h2 class="text-xs font-bold tracking-wider text-slate-400 uppercase">Live Sensor Telemetry</h2>
+				{#if isOnline}
+					<span class="text-xs font-mono text-cyan-400 font-medium">Nominal: {appState.v_nominal.toFixed(2)}V</span>
+				{/if}
+			</div>
+
+			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+				<!-- Loaded Voltage -->
+				<TelemetryCard
+					title="Loaded Voltage"
+					value={isOnline ? appState.v_actual.toFixed(2) : '--'}
 					unit="V"
-					accent="#5865f2"
+					subtext={isOnline ? `Sag: -${Math.max(0, appState.v_nominal - appState.v_actual).toFixed(2)}V` : 'Offline'}
+					percentage={isOnline ? ((appState.v_actual - 10.0) / 3.0) * 100 : 0}
+					color="cyan"
 					disabled={!isOnline}
-				/>
-				<SensorCard
-					icon="⚡"
-					label="Current"
-					value={isOnline ? mqttState.current : '--'}
+				>
+					{#snippet icon()}
+						<Gauge class="h-4 w-4" />
+					{/snippet}
+				</TelemetryCard>
+
+				<!-- Total Current -->
+				<TelemetryCard
+					title="Total Current"
+					value={isOnline ? appState.current.toFixed(2) : '--'}
 					unit="A"
-					accent="#f0b429"
+					subtext={isOnline ? `Limit: 3.50A` : 'Offline'}
+					percentage={isOnline ? (appState.current / 4.0) * 100 : 0}
+					color="amber"
 					disabled={!isOnline}
-				/>
-				<SensorCard
-					icon="💥"
-					label="Power"
-					value={isOnline ? mqttState.power : '--'}
+				>
+					{#snippet icon()}
+						<Zap class="h-4 w-4" />
+					{/snippet}
+				</TelemetryCard>
+
+				<!-- Total Power -->
+				<TelemetryCard
+					title="Power Draw"
+					value={isOnline ? appState.power.toFixed(2) : '--'}
 					unit="W"
-					accent="#3ecf8e"
+					subtext={isOnline ? `P = V × I` : 'Offline'}
+					percentage={isOnline ? (appState.power / 50.0) * 100 : 0}
+					color="green"
 					disabled={!isOnline}
-				/>
+				>
+					{#snippet icon()}
+						<Cpu class="h-4 w-4" />
+					{/snippet}
+				</TelemetryCard>
+
+				<!-- Battery SoC -->
+				<TelemetryCard
+					title="Battery Health"
+					value={isOnline ? `${appState.soc}` : '--'}
+					unit="%"
+					subtext="12V · 14Ah (168Wh)"
+					percentage={isOnline ? appState.soc : 0}
+					color="cyan"
+					disabled={!isOnline}
+				>
+					{#snippet icon()}
+						<BatteryCharging class="h-4 w-4" />
+					{/snippet}
+				</TelemetryCard>
+
+				<!-- Est. Remaining Runtime -->
+				<TelemetryCard
+					title="Est. Runtime"
+					value={isOnline ? appState.runtime : '--'}
+					unit=""
+					subtext="Peukert Discharge Model"
+					percentage={null}
+					color="purple"
+					disabled={!isOnline}
+				>
+					{#snippet icon()}
+						<Clock class="h-4 w-4" />
+					{/snippet}
+				</TelemetryCard>
 			</div>
 		</section>
 
-		<!-- ── Relay Controls ────────────────────────────────────────────────── -->
-		<section class="section">
-			<div class="relay-header">
-				<h2 class="section-title">🎛️ Relay Control</h2>
-				<div class="relay-summary">
-					<span class="active-badge">
-						{activeCount} / 4 active
-					</span>
-					<button
-						class="bulk-btn bulk-on"
-						onclick={allOn}
-						disabled={!isOnline}
-					>All ON</button>
-					<button
-						class="bulk-btn bulk-off"
-						onclick={allOff}
-						disabled={!isOnline}
-					>All OFF</button>
-				</div>
-			</div>
+		<!-- ── Live Scrolling Chart ──────────────────────────────────────────── -->
+		<LiveChart history={appState.history} />
 
-			<div class="relay-grid">
-				{#each RELAYS as relay, i}
-					<RelayCard
-						index={i}
-						label={relay.label}
-						icon={relay.icon}
-						state={isOnline ? mqttState.relays[i] : false}
-						onToggle={setRelay}
-						disabled={!isOnline}
-					/>
-				{/each}
-			</div>
-		</section>
+		<!-- ── 4-Channel Relay Controls ──────────────────────────────────────── -->
+		<RelayGrid relays={appState.relays} disabled={!isOnline} />
 
-		<!-- ── MQTT Info Panel ──────────────────────────────────────────────── -->
-		<section class="section">
-			<h2 class="section-title">🔗 Connection Info</h2>
-			<div class="info-grid">
-				<div class="info-row">
-					<span class="info-key">Broker</span>
-					<span class="info-val">broker.emqx.io</span>
+		<!-- ── Architecture & Protocol Information ───────────────────────────── -->
+		<section class="glass-card rounded-2xl p-5 border border-slate-800/80">
+			<h3 class="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3.5">
+				Dual Connectivity & Protocol Architecture
+			</h3>
+			<div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+				<div class="space-y-1 rounded-xl bg-slate-950/40 p-3 border border-slate-800/60">
+					<div class="font-semibold text-slate-300">Direct Local HTTP REST</div>
+					<div class="font-mono text-cyan-400">{appState.localHost}/api/data</div>
+					<div class="text-[11px] text-slate-500">Sub-second low-latency polling & control directly within your WiFi network.</div>
 				</div>
-				<div class="info-row">
-					<span class="info-key">Transport</span>
-					<span class="info-val">WebSocket (WSS :8084)</span>
+
+				<div class="space-y-1 rounded-xl bg-slate-950/40 p-3 border border-slate-800/60">
+					<div class="font-semibold text-slate-300">Cloud Remote MQTT</div>
+					<div class="font-mono text-purple-400">wss://broker.emqx.io:8084/mqtt</div>
+					<div class="text-[11px] text-slate-500">Encrypted WebSockets broker with LWT keep-alive and instantaneous telemetry updates.</div>
 				</div>
-				<div class="info-row">
-					<span class="info-key">Command topics</span>
-					<span class="info-val">voltas/relay/1 … 4</span>
-				</div>
-				<div class="info-row">
-					<span class="info-key">Sensor topics</span>
-					<span class="info-val">voltas/sensors/voltage|current|power</span>
-				</div>
-				<div class="info-row">
-					<span class="info-key">Status topic</span>
-					<span class="info-val">voltas/relay/status (JSON)</span>
-				</div>
-				<div class="info-row">
-					<span class="info-key">Device LWT</span>
-					<span class="info-val">voltas/status → online / offline</span>
+
+				<div class="space-y-1 rounded-xl bg-slate-950/40 p-3 border border-slate-800/60">
+					<div class="font-semibold text-slate-300">Auto Failover & Resilience</div>
+					<div class="font-mono text-emerald-400">Heartbeat + 3s Optimistic Revert</div>
+					<div class="text-[11px] text-slate-500">Automatically ping-checks local IP and transparently fails over to MQTT cloud when off-site.</div>
 				</div>
 			</div>
 		</section>
 
 	</main>
 
-	<footer class="footer">
-		<span>ESP32 · 4-Channel Relay · MQTT · Voltas</span>
+	<!-- Settings Slide-over Drawer -->
+	<SettingsModal open={settingsOpen} onClose={() => (settingsOpen = false)} />
+
+	<!-- Footer -->
+	<footer class="border-t border-slate-800/60 px-4 py-4 text-center text-xs text-slate-500">
+		<span>VOLTAS ESP32 Smart Relay & 12V 14Ah Power Dashboard · SvelteKit 5 + Tailwind CSS</span>
 	</footer>
 </div>
-
-<style>
-	/* ── Reset / Root ──────────────────────────────────────────────────────── */
-	:global(*, *::before, *::after) {
-		box-sizing: border-box;
-		margin: 0;
-		padding: 0;
-	}
-
-	:global(body) {
-		font-family: 'Inter', system-ui, -apple-system, sans-serif;
-		background: #0d0d1a;
-		color: #c8c8e8;
-		min-height: 100dvh;
-	}
-
-	/* ── App shell ─────────────────────────────────────────────────────────── */
-	.app {
-		display: flex;
-		flex-direction: column;
-		min-height: 100dvh;
-	}
-
-	.dashboard {
-		flex: 1;
-		max-width: 960px;
-		margin: 0 auto;
-		padding: 2rem 1.25rem;
-		width: 100%;
-		display: flex;
-		flex-direction: column;
-		gap: 2.5rem;
-	}
-
-	/* ── Section ───────────────────────────────────────────────────────────── */
-	.section-title {
-		font-size: 1rem;
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		color: #9090b8;
-		text-transform: uppercase;
-		margin-bottom: 1rem;
-	}
-
-	/* ── Sensor grid ───────────────────────────────────────────────────────── */
-	.sensor-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-		gap: 1rem;
-	}
-
-	/* ── Relay section header ──────────────────────────────────────────────── */
-	.relay-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-		margin-bottom: 1rem;
-	}
-
-	.relay-header .section-title {
-		margin-bottom: 0;
-	}
-
-	.relay-summary {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-	}
-
-	.active-badge {
-		font-size: 0.78rem;
-		font-weight: 700;
-		background: rgba(88, 101, 242, 0.15);
-		color: #8892f8;
-		border-radius: 999px;
-		padding: 0.2rem 0.75rem;
-	}
-
-	.bulk-btn {
-		font-size: 0.78rem;
-		font-weight: 700;
-		padding: 0.3rem 0.85rem;
-		border-radius: 0.5rem;
-		border: none;
-		cursor: pointer;
-		transition: opacity 0.2s;
-	}
-
-	.bulk-btn:disabled {
-		opacity: 0.35;
-		cursor: not-allowed;
-	}
-
-	.bulk-on {
-		background: rgba(62, 207, 142, 0.18);
-		color: #3ecf8e;
-	}
-
-	.bulk-on:hover:not(:disabled) {
-		background: rgba(62, 207, 142, 0.3);
-	}
-
-	.bulk-off {
-		background: rgba(255, 100, 100, 0.14);
-		color: #ff6b6b;
-	}
-
-	.bulk-off:hover:not(:disabled) {
-		background: rgba(255, 100, 100, 0.28);
-	}
-
-	/* ── Relay grid ────────────────────────────────────────────────────────── */
-	.relay-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-		gap: 1rem;
-	}
-
-	/* ── Info panel ────────────────────────────────────────────────────────── */
-	.info-grid {
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
-		background: #1a1a2e;
-		border: 1.5px solid #2a2a3a;
-		border-radius: 1rem;
-		padding: 1.1rem 1.25rem;
-	}
-
-	.info-row {
-		display: flex;
-		align-items: baseline;
-		gap: 0.75rem;
-		font-size: 0.82rem;
-	}
-
-	.info-key {
-		min-width: 120px;
-		font-weight: 700;
-		color: #5a5a8a;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		font-size: 0.72rem;
-	}
-
-	.info-val {
-		color: #a8a8d0;
-		font-family: 'JetBrains Mono', 'Fira Code', monospace;
-		word-break: break-all;
-	}
-
-	/* ── Footer ────────────────────────────────────────────────────────────── */
-	.footer {
-		text-align: center;
-		padding: 1rem;
-		font-size: 0.72rem;
-		color: #3a3a5a;
-		border-top: 1px solid #1e1e32;
-	}
-</style>

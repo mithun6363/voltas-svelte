@@ -13,7 +13,9 @@
 		"@sveltejs/adapter-vercel": "^7.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
+		"@tailwindcss/vite": "^4.3.3",
 		"svelte": "^5.57.1",
+		"tailwindcss": "^4.3.3",
 		"vite": "^8.3.0"
 	},
 	"imports": {
@@ -21,6 +23,7 @@
 		"#lib/*": "./src/lib/*"
 	},
 	"dependencies": {
+		"lucide-svelte": "^1.0.1",
 		"mqtt": "^5.16.1"
 	}
 }
