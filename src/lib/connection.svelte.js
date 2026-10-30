@@ -56,6 +56,7 @@ export const appState = $state({
 	voltage: '--',
 	current: '--',
 	power: '--',
+	soc: '--',
 	runtime: '--',
 
 	// Relays [0..3]
@@ -165,6 +166,9 @@ export function initConnection() {
 function updateRuntime() {
 	const v = parseFloat(appState.voltage);
 	const c = parseFloat(appState.current);
+	if (!isNaN(v)) {
+		appState.soc = calculateSoC(v, isNaN(c) ? 0 : c);
+	}
 	if (!isNaN(v) && !isNaN(c)) {
 		appState.runtime = calculateRuntime(v, c);
 	}
@@ -174,6 +178,7 @@ function resetTelemetry() {
 	appState.voltage = '--';
 	appState.current = '--';
 	appState.power = '--';
+	appState.soc = '--';
 	appState.runtime = '--';
 	appState.relays = [false, false, false, false];
 }
