@@ -1,9 +1,6 @@
 <script>
 	/**
 	 * +page.svelte  ─  Voltas IoT Full-Stack SvelteKit Dashboard
-	 *
-	 * High-Performance Dual-Connectivity Dashboard (Svelte 5 Runes)
-	 * Supports Local Direct HTTP REST & Cloud Remote MQTT over WebSockets
 	 */
 	import { onMount, onDestroy } from 'svelte';
 	import { appState, initConnection, destroyConnection, clearAlarms } from '#lib/connection.svelte.js';
@@ -11,12 +8,9 @@
 	import TelemetryCard from '#lib/components/TelemetryCard.svelte';
 	import RelayGrid from '#lib/components/RelayGrid.svelte';
 	import LiveChart from '#lib/components/LiveChart.svelte';
-	import SettingsModal from '#lib/components/SettingsModal.svelte';
 	import AlarmBanner from '#lib/components/AlarmBanner.svelte';
 
-	import { BatteryCharging, Zap, Gauge, Clock, ShieldAlert, Cpu } from 'lucide-svelte';
-
-	let settingsOpen = $state(false);
+	import { BatteryCharging, Zap, Gauge, Clock, Cpu } from 'lucide-svelte';
 
 	onMount(() => {
 		initConnection();
@@ -35,7 +29,7 @@
 
 <div class="flex min-h-screen flex-col bg-[#07090e] text-slate-100">
 	<!-- Top Bar -->
-	<Header onOpenSettings={() => (settingsOpen = true)} />
+	<Header />
 
 	<!-- Main Content Area -->
 	<main class="mx-auto flex-1 w-full max-w-7xl px-4 py-6 sm:px-6 space-y-6">
@@ -155,36 +149,7 @@
 		<!-- ── 4-Channel Relay Controls ──────────────────────────────────────── -->
 		<RelayGrid relays={appState.relays} disabled={!isOnline} />
 
-		<!-- ── Architecture & Protocol Information ───────────────────────────── -->
-		<section class="glass-card rounded-2xl p-5 border border-slate-800/80">
-			<h3 class="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3.5">
-				Dual Connectivity & Protocol Architecture
-			</h3>
-			<div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-				<div class="space-y-1 rounded-xl bg-slate-950/40 p-3 border border-slate-800/60">
-					<div class="font-semibold text-slate-300">Direct Local HTTP REST</div>
-					<div class="font-mono text-cyan-400">{appState.localHost}/api/data</div>
-					<div class="text-[11px] text-slate-500">Sub-second low-latency polling & control directly within your WiFi network.</div>
-				</div>
-
-				<div class="space-y-1 rounded-xl bg-slate-950/40 p-3 border border-slate-800/60">
-					<div class="font-semibold text-slate-300">Cloud Remote MQTT</div>
-					<div class="font-mono text-purple-400">wss://broker.emqx.io:8084/mqtt</div>
-					<div class="text-[11px] text-slate-500">Encrypted WebSockets broker with LWT keep-alive and instantaneous telemetry updates.</div>
-				</div>
-
-				<div class="space-y-1 rounded-xl bg-slate-950/40 p-3 border border-slate-800/60">
-					<div class="font-semibold text-slate-300">Auto Failover & Resilience</div>
-					<div class="font-mono text-emerald-400">Heartbeat + 3s Optimistic Revert</div>
-					<div class="text-[11px] text-slate-500">Automatically ping-checks local IP and transparently fails over to MQTT cloud when off-site.</div>
-				</div>
-			</div>
-		</section>
-
 	</main>
-
-	<!-- Settings Slide-over Drawer -->
-	<SettingsModal open={settingsOpen} onClose={() => (settingsOpen = false)} />
 
 	<!-- Footer -->
 	<footer class="border-t border-slate-800/60 px-4 py-4 text-center text-xs text-slate-500">
