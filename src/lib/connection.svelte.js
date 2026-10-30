@@ -1,50 +1,45 @@
 /**
  * connection.svelte.js
- * Cloud MQTT Telemetry & Control Engine (Svelte 5 Runes)
+ * Core MQTT Telemetry & Direct Relay Control Engine
  */
 
 import mqtt from 'mqtt';
 
-// ─── Broker & Battery Constants ───────────────────────────────────────────────
+// ─── Broker Configuration ─────────────────────────────────────────────────────
 const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
-const CLIENT_ID = `voltas-dashboard-${Math.random().toString(16).slice(2, 10)}`;
+const CLIENT_ID = `voltas-core-${Math.random().toString(16).slice(2, 8)}`;
 
-// 12V 14Ah Battery Specification
+// 12V 14Ah Battery Spec
 export const BATTERY_CAPACITY_AH = 14.0;
-export const BATTERY_FULL_V = 12.70;
 export const BATTERY_CUTOFF_V = 10.50;
-export const BATTERY_CRITICAL_V = 11.20;
-export const OVER_CURRENT_THRESHOLD = 3.50; // Amperes
+export const BATTERY_FULL_V = 12.70;
 
-// Internal Topics (MQTT details kept private from UI)
+// MQTT Topics
 const TOPIC_VOLTAGE = 'voltas/sensors/voltage';
 const TOPIC_CURRENT = 'voltas/sensors/current';
 const TOPIC_POWER = 'voltas/sensors/power';
 const TOPIC_RELAY_STATUS = 'voltas/relay/status';
 const TOPIC_DEVICE_STATUS = 'voltas/status'; // LWT topic
-const TOPIC_RELAY_CMD = ['voltas/relay/1', 'voltas/relay/2', 'voltas/relay/3', 'voltas/relay/4'];
-const TOPIC_ALARM = 'voltas/alarm/overcurrent';
+const TOPIC_RELAY_CMD = [
+	'voltas/relay/1',
+	'voltas/relay/2',
+	'voltas/relay/3',
+	'voltas/relay/4'
+];
 
 /**
- * Calculates battery State of Charge (% SoC) compensated for load sag
- */
-export function calculateSoC(voltage, current = 0) {
-	if (isNaN(voltage) || voltage <= 0) return 0;
-	const voc = voltage + (current * 0.08);
-	const raw = ((voc - BATTERY_CUTOFF_V) / (BATTERY_FULL_V - BATTERY_CUTOFF_V)) * 100;
-	return Math.round(Math.max(0, Math.min(100, raw)));
-}
-
-/**
- * Calculates human-readable remaining run time (12V 14Ah spec)
+ * Calculates human-readable remaining run time for 12V 14Ah battery
  */
 export function calculateRuntime(voltage, current) {
 	if (isNaN(current) || current <= 0.05) return 'Idle (No load)';
-	if (isNaN(voltage) || voltage <= BATTERY_CUTOFF_V) return '< 5m (Empty)';
-	const soc = calculateSoC(voltage, current) / 100;
-	const remainingAh = BATTERY_CAPACITY_AH * Math.max(0.02, soc);
-	const effectiveI = Math.pow(current, 1.05); // Peukert compensation
-	const hours = remainingAh / effectiveI;
+	if (isNaN(voltage) || voltage <= BATTERY_CUTOFF_V) return '< 5 min';
+
+	// Open-circuit voltage compensation for voltage sag (0.08 ohm internal R)
+	const voc = voltage + (current * 0.08);
+	const soc = Math.max(0.05, Math.min(1.0, (voc - BATTERY_CUTOFF_V) / (BATTERY_FULL_V - BATTERY_CUTOFF_V)));
+	const remainingAh = BATTERY_CAPACITY_AH * soc;
+	const hours = remainingAh / current;
+
 	if (hours > 99) return '> 99h';
 	const h = Math.floor(hours);
 	const m = Math.round((hours - h) * 60);
@@ -55,120 +50,28 @@ export function calculateRuntime(voltage, current) {
 export const appState = $state({
 	// Device status: 'ONLINE' | 'OFFLINE' | 'CONNECTING'
 	status: 'CONNECTING',
-	error: /** @type {string|null} */ (null),
 	lastSeen: /** @type {string|null} */ (null),
 
 	// Live Telemetry
-	v_nominal: 12.60,
-	v_actual: 0.0,
-	current: 0.0,
-	power: 0.0,
-	soc: 0,
+	voltage: '--',
+	current: '--',
+	power: '--',
 	runtime: '--',
 
 	// Relays [0..3]
-	relays: [false, false, false, false],
-
-	// Alarms
-	overCurrentAlarm: false,
-	alarmMessage: '',
-	alarmTimestamp: /** @type {string|null} */ (null),
-	lowBatteryAlarm: false,
-	lowBatteryMessage: '',
-
-	// Rolling 60-second telemetry history for live charts
-	/** @type {Array<{ time: string, timestamp: number, voltage: number, current: number, power: number }>} */
-	history: [],
-
-	// Settings configuration (stored in state)
-	config: {
-		v_bat: 12.60,
-		r_int: 0.08,
-		r_low: 1,
-		i_r1: 1.0,
-		i_r2: 2.5,
-		i_r3: 0.5,
-		i_r4: 0.8
-	}
+	relays: [false, false, false, false]
 });
 
-// ─── Internal References ──────────────────────────────────────────────────────
+// ─── MQTT Client Instance ─────────────────────────────────────────────────────
 /** @type {import('mqtt').MqttClient|null} */
 let mqttClient = null;
-/** @type {Array<number|null>} */
-const optimisticTimers = [null, null, null, null];
-
-function recordTelemetryPoint(v, c, p) {
-	const now = new Date();
-	const point = {
-		time: now.toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' }),
-		timestamp: Date.now(),
-		voltage: Number(v.toFixed(2)),
-		current: Number(c.toFixed(2)),
-		power: Number(p.toFixed(2))
-	};
-
-	appState.history.push(point);
-	if (appState.history.length > 60) {
-		appState.history.shift();
-	}
-}
-
-function processTelemetry(vActual, current, power) {
-	appState.status = 'ONLINE';
-	appState.lastSeen = new Date().toLocaleTimeString();
-	appState.v_actual = vActual;
-	appState.current = current;
-	appState.power = power;
-
-	appState.soc = calculateSoC(vActual, current);
-	appState.runtime = calculateRuntime(vActual, current);
-
-	recordTelemetryPoint(vActual, current, power);
-
-	// Over-current protection logic
-	if (current > OVER_CURRENT_THRESHOLD) {
-		triggerOverCurrentProtection(current);
-	} else if (appState.overCurrentAlarm && current <= OVER_CURRENT_THRESHOLD - 0.4) {
-		appState.overCurrentAlarm = false;
-	}
-
-	// Low-battery alarm check
-	if (vActual > 0 && (vActual <= BATTERY_CRITICAL_V || appState.soc <= 15)) {
-		appState.lowBatteryAlarm = true;
-		appState.lowBatteryMessage = `Low Battery: ${vActual.toFixed(2)}V (${appState.soc}%). Below 11.20V threshold!`;
-	} else if (vActual > BATTERY_CRITICAL_V + 0.3) {
-		appState.lowBatteryAlarm = false;
-	}
-}
-
-function triggerOverCurrentProtection(c) {
-	appState.overCurrentAlarm = true;
-	appState.alarmTimestamp = new Date().toLocaleTimeString();
-
-	// Automatically shut off highest load: Relay 2 first, then 1, 4, 3
-	const priorityOrder = [1, 0, 3, 2];
-	let shedIndex = -1;
-	for (const idx of priorityOrder) {
-		if (appState.relays[idx]) {
-			shedIndex = idx;
-			toggleRelay(idx, false);
-			break;
-		}
-	}
-
-	if (shedIndex >= 0) {
-		appState.alarmMessage = `OVER-CURRENT ALARM: ${c.toFixed(2)}A exceeded ${OVER_CURRENT_THRESHOLD}A limit. High load Relay ${shedIndex + 1} automatically switched OFF.`;
-	} else {
-		appState.alarmMessage = `OVER-CURRENT ALERT: Total current (${c.toFixed(2)}A) exceeds safe limit (${OVER_CURRENT_THRESHOLD}A).`;
-	}
-}
 
 // ─── Connection Lifecycle ─────────────────────────────────────────────────────
 export function initConnection() {
 	if (mqttClient) return;
 
 	appState.status = 'CONNECTING';
+
 	mqttClient = mqtt.connect(BROKER_URL, {
 		clientId: CLIENT_ID,
 		clean: true,
@@ -179,7 +82,6 @@ export function initConnection() {
 
 	mqttClient.on('connect', () => {
 		appState.status = 'ONLINE';
-		appState.error = null;
 
 		const topics = [
 			TOPIC_VOLTAGE,
@@ -187,7 +89,6 @@ export function initConnection() {
 			TOPIC_POWER,
 			TOPIC_RELAY_STATUS,
 			TOPIC_DEVICE_STATUS,
-			TOPIC_ALARM,
 			...TOPIC_RELAY_CMD
 		];
 		mqttClient?.subscribe(topics, { qos: 1 });
@@ -197,68 +98,84 @@ export function initConnection() {
 		const msg = payload.toString().trim();
 		appState.lastSeen = new Date().toLocaleTimeString();
 
+		// Device Online / Offline Heartbeat (LWT)
 		if (topic === TOPIC_DEVICE_STATUS) {
 			const isOnline = msg.toLowerCase() === 'online';
 			appState.status = isOnline ? 'ONLINE' : 'OFFLINE';
 			if (!isOnline) {
-				resetLiveTelemetry();
+				resetTelemetry();
 			}
 			return;
 		}
 
+		// Only update telemetry while device is online
+		if (appState.status !== 'ONLINE') {
+			appState.status = 'ONLINE'; // Received active traffic from device
+		}
+
 		if (topic === TOPIC_VOLTAGE) {
-			const v = parseFloat(msg) || 0;
-			processTelemetry(v, appState.current, appState.power);
+			const v = parseFloat(msg);
+			if (!isNaN(v)) {
+				appState.voltage = v.toFixed(2);
+				updateRuntime();
+			}
 		} else if (topic === TOPIC_CURRENT) {
-			const c = parseFloat(msg) || 0;
-			processTelemetry(appState.v_actual, c, appState.power);
+			const c = parseFloat(msg);
+			if (!isNaN(c)) {
+				appState.current = c.toFixed(2);
+				updateRuntime();
+			}
 		} else if (topic === TOPIC_POWER) {
-			const p = parseFloat(msg) || 0;
-			processTelemetry(appState.v_actual, appState.current, p);
+			const p = parseFloat(msg);
+			if (!isNaN(p)) {
+				appState.power = p.toFixed(2);
+			}
 		} else if (topic === TOPIC_RELAY_STATUS) {
 			try {
 				const d = JSON.parse(msg);
 				for (let i = 0; i < 4; i++) {
-					const state = d[`relay${i + 1}`] === 'ON';
-					appState.relays[i] = state;
-					if (optimisticTimers[i]) {
-						clearTimeout(optimisticTimers[i]);
-						optimisticTimers[i] = null;
-					}
+					appState.relays[i] = d[`relay${i + 1}`] === 'ON';
 				}
 			} catch {
-				// ignore malformed
-			}
-		} else if (topic === TOPIC_ALARM) {
-			try {
-				const d = JSON.parse(msg);
-				appState.overCurrentAlarm = Boolean(d.alarm);
-				if (d.message) appState.alarmMessage = d.message;
-				appState.alarmTimestamp = new Date().toLocaleTimeString();
-			} catch {
-				appState.overCurrentAlarm = msg.toUpperCase().includes('ALARM');
-				appState.alarmMessage = msg;
+				// Ignore malformed JSON
 			}
 		} else {
+			// Relay echo command topics (voltas/relay/1..4)
 			const idx = TOPIC_RELAY_CMD.indexOf(topic);
 			if (idx !== -1) {
-				const state = msg.toUpperCase() === 'ON';
-				appState.relays[idx] = state;
-				if (optimisticTimers[idx]) {
-					clearTimeout(optimisticTimers[idx]);
-					optimisticTimers[idx] = null;
-				}
+				appState.relays[idx] = msg.toUpperCase() === 'ON';
 			}
 		}
 	});
 
 	mqttClient.on('offline', () => {
 		appState.status = 'OFFLINE';
+		resetTelemetry();
 	});
 
-	mqttClient.on('error', (err) => {
-		appState.error = err.message;
+	mqttClient.on('close', () => {
+		appState.status = 'OFFLINE';
 	});
+
+	mqttClient.on('error', () => {
+		appState.status = 'OFFLINE';
+	});
+}
+
+function updateRuntime() {
+	const v = parseFloat(appState.voltage);
+	const c = parseFloat(appState.current);
+	if (!isNaN(v) && !isNaN(c)) {
+		appState.runtime = calculateRuntime(v, c);
+	}
+}
+
+function resetTelemetry() {
+	appState.voltage = '--';
+	appState.current = '--';
+	appState.power = '--';
+	appState.runtime = '--';
+	appState.relays = [false, false, false, false];
 }
 
 export function destroyConnection() {
@@ -268,52 +185,20 @@ export function destroyConnection() {
 	}
 }
 
-function resetLiveTelemetry() {
-	appState.v_actual = 0;
-	appState.current = 0;
-	appState.power = 0;
-	appState.soc = 0;
-	appState.runtime = '--';
-	appState.relays = [false, false, false, false];
-	appState.overCurrentAlarm = false;
-	appState.lowBatteryAlarm = false;
-}
-
-// ─── Optimistic Relay Toggling ────────────────────────────────────────────────
+// ─── Direct Relay Control ─────────────────────────────────────────────────────
 /**
+ * Toggles a relay channel directly via MQTT
  * @param {number} index  0..3
  * @param {boolean} targetState
  */
 export function toggleRelay(index, targetState) {
 	if (index < 0 || index >= 4) return;
-	const originalState = appState.relays[index];
 
-	// Optimistic UI update immediately
+	// Instant UI responsiveness
 	appState.relays[index] = targetState;
 
-	// Set 3-second safety revert timer if not confirmed
-	if (optimisticTimers[index]) clearTimeout(optimisticTimers[index]);
-	optimisticTimers[index] = setTimeout(() => {
-		console.warn(`[Relay] Relay ${index + 1} toggle unconfirmed after 3s. Reverting.`);
-		appState.relays[index] = originalState;
-		optimisticTimers[index] = null;
-	}, 3000);
-
-	// Dispatch command via MQTT
+	// Publish directly to device topic
 	if (mqttClient?.connected) {
 		mqttClient.publish(TOPIC_RELAY_CMD[index], targetState ? 'ON' : 'OFF', { qos: 1 });
 	}
-}
-
-// ─── Settings Configuration Update ────────────────────────────────────────────
-export function saveSystemConfig(cfg) {
-	Object.assign(appState.config, cfg);
-	return true;
-}
-
-export function clearAlarms() {
-	appState.overCurrentAlarm = false;
-	appState.alarmMessage = '';
-	appState.lowBatteryAlarm = false;
-	appState.lowBatteryMessage = '';
 }
