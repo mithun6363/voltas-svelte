@@ -21,6 +21,7 @@ const TOPIC_POWER = 'voltas/sensors/power';
 const TOPIC_TEMPERATURE = 'voltas/sensors/temperature';
 const TOPIC_RELAY_STATUS = 'voltas/relay/status';
 const TOPIC_DEVICE_STATUS = 'voltas/status'; // LWT topic
+export const TOPIC_SET_CURRENT_LIMIT = 'voltas/config/high_current_limit';
 const TOPIC_RELAY_CMD = [
 	'voltas/relay/1',
 	'voltas/relay/2',
@@ -60,6 +61,9 @@ export const appState = $state({
 	temperature: '--',
 	runtime: '--',
 
+	// Overcurrent Protection Limit (Amperes)
+	currentLimit: 3.5,
+
 	// Relays [0..3]
 	relays: [false, false, false, false]
 });
@@ -85,14 +89,15 @@ export function initConnection() {
 	mqttClient.on('connect', () => {
 		appState.status = 'ONLINE';
 
-		// Subscribe to strictly the 6 contract topics (never subscribe to command topics)
+		// Subscribe to strictly contract topics and configuration topics
 		const topics = [
 			TOPIC_VOLTAGE,
 			TOPIC_CURRENT,
 			TOPIC_POWER,
 			TOPIC_TEMPERATURE,
 			TOPIC_RELAY_STATUS,
-			TOPIC_DEVICE_STATUS
+			TOPIC_DEVICE_STATUS,
+			TOPIC_SET_CURRENT_LIMIT
 		];
 		mqttClient?.subscribe(topics, { qos: 1 });
 	});
@@ -137,6 +142,11 @@ export function initConnection() {
 			const t = parseFloat(msg);
 			if (!isNaN(t)) {
 				appState.temperature = t.toFixed(1);
+			}
+		} else if (topic === TOPIC_SET_CURRENT_LIMIT) {
+			const limit = parseFloat(msg);
+			if (!isNaN(limit) && limit > 0) {
+				appState.currentLimit = parseFloat(limit.toFixed(2));
 			}
 		} else if (topic === TOPIC_RELAY_STATUS) {
 			try {
@@ -189,6 +199,22 @@ export function destroyConnection() {
 }
 
 // ─── Direct Relay Control ─────────────────────────────────────────────────────
+/**
+ * Sets and publishes high current threshold limit (e.g. 3.0 or 4.5 Amperes).
+ * ESP32 saves to Flash NVS storage and evaluates immediately.
+ * @param {number|string} limit
+ */
+export function setHighCurrentLimit(limit) {
+	const val = typeof limit === 'number' ? limit : parseFloat(limit);
+	if (isNaN(val) || val <= 0 || appState.status !== 'ONLINE' || !mqttClient?.connected) return;
+
+	const formatted = val.toFixed(2);
+	appState.currentLimit = parseFloat(formatted);
+
+	// Publish to ESP32: qos 1, retain true so threshold persists on broker across reconnects
+	mqttClient.publish(TOPIC_SET_CURRENT_LIMIT, formatted, { qos: 1, retain: true });
+}
+
 /**
  * Toggles a relay channel directly via MQTT
  * @param {number} index  0..3
