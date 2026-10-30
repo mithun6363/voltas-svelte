@@ -12,7 +12,7 @@
 	import TelemetryCard from "#lib/components/TelemetryCard.svelte";
 	import RelayGrid from "#lib/components/RelayGrid.svelte";
 
-	import { BatteryCharging, Gauge, Clock, Cpu } from "lucide-svelte";
+	import { Zap, Gauge, Clock, Cpu } from "lucide-svelte";
 
 	onMount(() => {
 		initConnection();
@@ -63,18 +63,20 @@
 					{/snippet}
 				</TelemetryCard>
 
-				<!-- Battery Level -->
+				<!-- Current -->
 				<TelemetryCard
-					title="Battery Level"
-					value={isOnline ? `${appState.soc}` : "--"}
-					unit="%"
-					subtext={isOnline ? "12V 14Ah Pack" : "Offline"}
-					percentage={isOnline ? Number(appState.soc) || 0 : 0}
-					color="green"
+					title="Total Current"
+					value={isOnline ? appState.current : "--"}
+					unit="A"
+					subtext={isOnline ? "Load Current" : "Offline"}
+					percentage={isOnline
+						? (parseFloat(appState.current) / 4.0) * 100
+						: 0}
+					color="amber"
 					disabled={!isOnline}
 				>
 					{#snippet icon()}
-						<BatteryCharging class="h-4 w-4" />
+						<Zap class="h-4 w-4" />
 					{/snippet}
 				</TelemetryCard>
 
