@@ -18,6 +18,7 @@ export const BATTERY_FULL_V = 12.70;
 const TOPIC_VOLTAGE = 'voltas/sensors/voltage';
 const TOPIC_CURRENT = 'voltas/sensors/current';
 const TOPIC_POWER = 'voltas/sensors/power';
+const TOPIC_TEMPERATURE = 'voltas/sensors/temperature';
 const TOPIC_RELAY_STATUS = 'voltas/relay/status';
 const TOPIC_DEVICE_STATUS = 'voltas/status'; // LWT topic
 const TOPIC_RELAY_CMD = [
@@ -56,6 +57,7 @@ export const appState = $state({
 	voltage: '--',
 	current: '--',
 	power: '--',
+	temperature: '--',
 	runtime: '--',
 
 	// Relays [0..3]
@@ -83,13 +85,14 @@ export function initConnection() {
 	mqttClient.on('connect', () => {
 		appState.status = 'ONLINE';
 
+		// Subscribe to strictly the 6 contract topics (never subscribe to command topics)
 		const topics = [
 			TOPIC_VOLTAGE,
 			TOPIC_CURRENT,
 			TOPIC_POWER,
+			TOPIC_TEMPERATURE,
 			TOPIC_RELAY_STATUS,
-			TOPIC_DEVICE_STATUS,
-			...TOPIC_RELAY_CMD
+			TOPIC_DEVICE_STATUS
 		];
 		mqttClient?.subscribe(topics, { qos: 1 });
 	});
@@ -108,9 +111,9 @@ export function initConnection() {
 			return;
 		}
 
-		// Only update telemetry while device is online
+		// Reject stale/retained telemetry when device is OFFLINE
 		if (appState.status !== 'ONLINE') {
-			appState.status = 'ONLINE'; // Received active traffic from device
+			return;
 		}
 
 		if (topic === TOPIC_VOLTAGE) {
@@ -130,6 +133,11 @@ export function initConnection() {
 			if (!isNaN(p)) {
 				appState.power = p.toFixed(2);
 			}
+		} else if (topic === TOPIC_TEMPERATURE) {
+			const t = parseFloat(msg);
+			if (!isNaN(t)) {
+				appState.temperature = t.toFixed(1);
+			}
 		} else if (topic === TOPIC_RELAY_STATUS) {
 			try {
 				const d = JSON.parse(msg);
@@ -138,12 +146,6 @@ export function initConnection() {
 				}
 			} catch {
 				// Ignore malformed JSON
-			}
-		} else {
-			// Relay echo command topics (voltas/relay/1..4)
-			const idx = TOPIC_RELAY_CMD.indexOf(topic);
-			if (idx !== -1) {
-				appState.relays[idx] = msg.toUpperCase() === 'ON';
 			}
 		}
 	});
@@ -174,6 +176,7 @@ function resetTelemetry() {
 	appState.voltage = '--';
 	appState.current = '--';
 	appState.power = '--';
+	appState.temperature = '--';
 	appState.runtime = '--';
 	appState.relays = [false, false, false, false];
 }
@@ -192,13 +195,12 @@ export function destroyConnection() {
  * @param {boolean} targetState
  */
 export function toggleRelay(index, targetState) {
-	if (index < 0 || index >= 4) return;
+	// Guard against invalid index or disabled/offline states
+	if (index < 0 || index >= 4 || appState.status !== 'ONLINE' || !mqttClient?.connected) return;
 
 	// Instant UI responsiveness
 	appState.relays[index] = targetState;
 
-	// Publish directly to device topic
-	if (mqttClient?.connected) {
-		mqttClient.publish(TOPIC_RELAY_CMD[index], targetState ? 'ON' : 'OFF', { qos: 1 });
-	}
+	// Publish directly to device topic: qos 1, retain false (never retain commands)
+	mqttClient.publish(TOPIC_RELAY_CMD[index], targetState ? 'ON' : 'OFF', { qos: 1, retain: false });
 }

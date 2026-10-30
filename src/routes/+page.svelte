@@ -12,7 +12,7 @@
 	import TelemetryCard from "#lib/components/TelemetryCard.svelte";
 	import RelayGrid from "#lib/components/RelayGrid.svelte";
 
-	import { Zap, Gauge, Clock, Cpu } from "lucide-svelte";
+	import { Zap, Gauge, Clock, Cpu, Thermometer } from "lucide-svelte";
 
 	onMount(() => {
 		initConnection();
@@ -45,7 +45,7 @@
 				</h2>
 			</div>
 
-			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
 				<!-- Voltage -->
 				<TelemetryCard
 					title="Voltage"
@@ -94,6 +94,23 @@
 				>
 					{#snippet icon()}
 						<Cpu class="h-4 w-4" />
+					{/snippet}
+				</TelemetryCard>
+
+				<!-- Temperature -->
+				<TelemetryCard
+					title="Temperature"
+					value={isOnline ? appState.temperature : "--"}
+					unit="°C"
+					subtext={isOnline ? "Sensor Temp" : "Offline"}
+					percentage={isOnline
+						? Math.min(100, Math.max(0, (parseFloat(appState.temperature) / 80.0) * 100))
+						: 0}
+					color="rose"
+					disabled={!isOnline}
+				>
+					{#snippet icon()}
+						<Thermometer class="h-4 w-4" />
 					{/snippet}
 				</TelemetryCard>
 
